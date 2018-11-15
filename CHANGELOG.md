@@ -5,6 +5,10 @@ BUG FIXES:
 * Parse Azure PostgreSQL version
   ([#40](https://github.com/terraform-providers/terraform-provider-postgresql/pull/40))
 
+FEATURES:
+
+* New resource: postgresql_grant. This resource allows to grant privileges on all existing tables or sequences for a specified role in a specified schema.
+
 ## 0.1.2 (July 06, 2018)
 
 FEATURES:
