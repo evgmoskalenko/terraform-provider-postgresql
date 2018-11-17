@@ -10,6 +10,14 @@ import (
 	"github.com/lib/pq"
 )
 
+// QueryAble is common interface for sql.DB and sql.Tx
+// (cf https://github.com/golang/go/issues/14468)
+type QueryAble interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+	Query(query string, args ...interface{}) (*sql.Rows, error)
+	QueryRow(query string, args ...interface{}) *sql.Row
+}
+
 // pqQuoteLiteral returns a string literal safe for inclusion in a PostgreSQL
 // query as a parameter.  The resulting string still needs to be wrapped in
 // single quotes in SQL (i.e. fmt.Sprintf(`'%s'`, pqQuoteLiteral("str"))).  See
@@ -67,10 +75,7 @@ func pgArrayToSet(arr pq.ByteaArray) *schema.Set {
 	return schema.NewSet(schema.HashString, s)
 }
 
-// startTransaction starts a new DB transaction on the specified database.
-// If the database is specified and different from the one configured in the provider,
-// it will create a new connection pool if needed.
-func startTransaction(client *Client, database string) (*sql.Tx, error) {
+func getDBConnection(client *Client, database string) (*sql.DB, error) {
 	if database != "" && database != client.databaseName {
 		var err error
 		client, err = client.config.NewClient(database)
@@ -78,7 +83,18 @@ func startTransaction(client *Client, database string) (*sql.Tx, error) {
 			return nil, err
 		}
 	}
-	db := client.DB()
+	return client.DB(), nil
+}
+
+// startTransaction starts a new DB transaction on the specified database.
+// If the database is specified and different from the one configured in the provider,
+// it will create a new connection pool if needed.
+func startTransaction(client *Client, database string) (*sql.Tx, error) {
+	db, err := getDBConnection(client, database)
+	if err != nil {
+		return nil, err
+	}
+
 	txn, err := db.Begin()
 	if err != nil {
 		return nil, errwrap.Wrapf("could not start transaction: {{err}}", err)
@@ -87,8 +103,8 @@ func startTransaction(client *Client, database string) (*sql.Tx, error) {
 	return txn, nil
 }
 
-func dbExists(txn *sql.Tx, dbname string) (bool, error) {
-	err := txn.QueryRow("SELECT datname FROM pg_database WHERE datname=$1", dbname).Scan(&dbname)
+func dbExists(db QueryAble, dbname string) (bool, error) {
+	err := db.QueryRow("SELECT datname FROM pg_database WHERE datname=$1", dbname).Scan(&dbname)
 	switch {
 	case err == sql.ErrNoRows:
 		return false, nil
@@ -99,8 +115,8 @@ func dbExists(txn *sql.Tx, dbname string) (bool, error) {
 	return true, nil
 }
 
-func roleExists(txn *sql.Tx, rolname string) (bool, error) {
-	err := txn.QueryRow("SELECT 1 FROM pg_roles WHERE rolname=$1", rolname).Scan(&rolname)
+func roleExists(db QueryAble, rolname string) (bool, error) {
+	err := db.QueryRow("SELECT 1 FROM pg_roles WHERE rolname=$1", rolname).Scan(&rolname)
 	switch {
 	case err == sql.ErrNoRows:
 		return false, nil
@@ -111,8 +127,8 @@ func roleExists(txn *sql.Tx, rolname string) (bool, error) {
 	return true, nil
 }
 
-func schemaExists(txn *sql.Tx, schemaname string) (bool, error) {
-	err := txn.QueryRow("SELECT 1 FROM pg_namespace WHERE nspname=$1", schemaname).Scan(&schemaname)
+func schemaExists(db QueryAble, schemaname string) (bool, error) {
+	err := db.QueryRow("SELECT 1 FROM pg_namespace WHERE nspname=$1", schemaname).Scan(&schemaname)
 	switch {
 	case err == sql.ErrNoRows:
 		return false, nil

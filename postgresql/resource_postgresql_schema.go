@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	schemaNameAttr    = "name"
-	schemaOwnerAttr   = "owner"
-	schemaPolicyAttr  = "policy"
-	schemaIfNotExists = "if_not_exists"
+	schemaNameAttr     = "name"
+	schemaDatabaseAttr = "database"
+	schemaOwnerAttr    = "owner"
+	schemaPolicyAttr   = "policy"
+	schemaIfNotExists  = "if_not_exists"
 
 	schemaPolicyCreateAttr          = "create"
 	schemaPolicyCreateWithGrantAttr = "create_with_grant"
@@ -44,6 +45,12 @@ func resourcePostgreSQLSchema() *schema.Resource {
 				Type:        schema.TypeString,
 				Required:    true,
 				Description: "The name of the schema",
+			},
+			schemaDatabaseAttr: {
+				Type:        schema.TypeString,
+				Required:    true,
+				ForceNew:    true,
+				Description: "The database to create the schema in",
 			},
 			schemaOwnerAttr: {
 				Type:        schema.TypeString,
@@ -158,7 +165,7 @@ func resourcePostgreSQLSchemaCreate(d *schema.ResourceData, meta interface{}) er
 	c.catalogLock.Lock()
 	defer c.catalogLock.Unlock()
 
-	txn, err := c.DB().Begin()
+	txn, err := startTransaction(c, d.Get("database").(string))
 	if err != nil {
 		return err
 	}
@@ -184,25 +191,20 @@ func resourcePostgreSQLSchemaDelete(d *schema.ResourceData, meta interface{}) er
 	c.catalogLock.Lock()
 	defer c.catalogLock.Unlock()
 
-	txn, err := c.DB().Begin()
+	database, schemaName, err := getSchemaNames(d)
 	if err != nil {
 		return err
 	}
-	defer txn.Rollback()
-
-	schemaName := d.Get(schemaNameAttr).(string)
+	db, err := getDBConnection(c, database)
+	if err != nil {
+		return err
+	}
 
 	// NOTE(sean@): Deliberately not performing a cascading drop.
 	sql := fmt.Sprintf("DROP SCHEMA %s", pq.QuoteIdentifier(schemaName))
-	if _, err = txn.Exec(sql); err != nil {
+	if _, err = db.Exec(sql); err != nil {
 		return errwrap.Wrapf("Error deleting schema: {{err}}", err)
 	}
-
-	if err := txn.Commit(); err != nil {
-		return errwrap.Wrapf("Error committing schema: {{err}}", err)
-	}
-
-	d.SetId("")
 
 	return nil
 }
@@ -212,8 +214,25 @@ func resourcePostgreSQLSchemaExists(d *schema.ResourceData, meta interface{}) (b
 	c.catalogLock.RLock()
 	defer c.catalogLock.RUnlock()
 
-	var schemaName string
-	err := c.DB().QueryRow("SELECT n.nspname FROM pg_catalog.pg_namespace n WHERE n.nspname=$1", d.Id()).Scan(&schemaName)
+	database, schemaName, err := getSchemaNames(d)
+	if err != nil {
+		return false, err
+	}
+
+	// Check the database exists
+	exists, err := dbExists(c.DB(), database)
+	if err != nil || !exists {
+		return false, err
+	}
+
+	db, err := getDBConnection(c, database)
+	if err != nil {
+		return false, err
+	}
+
+	err = db.QueryRow(
+		"SELECT n.nspname FROM pg_catalog.pg_namespace n WHERE n.nspname=$1", schemaName,
+	).Scan(&schemaName)
 	switch {
 	case err == sql.ErrNoRows:
 		return false, nil
@@ -235,13 +254,26 @@ func resourcePostgreSQLSchemaRead(d *schema.ResourceData, meta interface{}) erro
 func resourcePostgreSQLSchemaReadImpl(d *schema.ResourceData, meta interface{}) error {
 	c := meta.(*Client)
 
-	schemaId := d.Id()
-	var schemaName, schemaOwner string
+	database, schemaName, err := getSchemaNames(d)
+	if err != nil {
+		return err
+	}
+
+	db, err := getDBConnection(c, database)
+	if err != nil {
+		return err
+	}
+
+	var schemaOwner string
 	var schemaACLs []string
-	err := c.DB().QueryRow("SELECT n.nspname, pg_catalog.pg_get_userbyid(n.nspowner), COALESCE(n.nspacl, '{}'::aclitem[])::TEXT[] FROM pg_catalog.pg_namespace n WHERE n.nspname=$1", schemaId).Scan(&schemaName, &schemaOwner, pq.Array(&schemaACLs))
+	err = db.QueryRow(
+		`SELECT pg_catalog.pg_get_userbyid(n.nspowner), COALESCE(n.nspacl, '{}'::aclitem[])::TEXT[]
+		FROM pg_catalog.pg_namespace n WHERE n.nspname=$1`, schemaName,
+	).Scan(&schemaOwner, pq.Array(&schemaACLs))
+
 	switch {
 	case err == sql.ErrNoRows:
-		log.Printf("[WARN] PostgreSQL schema (%s) not found", schemaId)
+		log.Printf("[WARN] PostgreSQL schema (%s) not found", schemaName)
 		d.SetId("")
 		return nil
 	case err != nil:
@@ -271,8 +303,9 @@ func resourcePostgreSQLSchemaReadImpl(d *schema.ResourceData, meta interface{}) 
 		}
 
 		d.Set(schemaNameAttr, schemaName)
+		d.Set(schemaDatabaseAttr, database)
 		d.Set(schemaOwnerAttr, schemaOwner)
-		d.SetId(schemaName)
+		d.SetId(generateSchemaID(d))
 		return nil
 	}
 }
@@ -282,7 +315,7 @@ func resourcePostgreSQLSchemaUpdate(d *schema.ResourceData, meta interface{}) er
 	c.catalogLock.Lock()
 	defer c.catalogLock.Unlock()
 
-	txn, err := c.DB().Begin()
+	txn, err := startTransaction(c, d.Get(schemaDatabaseAttr).(string))
 	if err != nil {
 		return err
 	}
@@ -323,7 +356,7 @@ func setSchemaName(txn *sql.Tx, d *schema.ResourceData) error {
 	if _, err := txn.Exec(sql); err != nil {
 		return errwrap.Wrapf("Error updating schema NAME: {{err}}", err)
 	}
-	d.SetId(n)
+	d.SetId(generateSchemaID(d))
 
 	return nil
 }
@@ -509,4 +542,29 @@ func schemaPolicyToACL(policyMap map[string]interface{}) acl.Schema {
 	}
 
 	return rolePolicy
+}
+
+func generateSchemaID(d *schema.ResourceData) string {
+	return fmt.Sprintf("%s-%s", d.Get(schemaDatabaseAttr).(string), d.Get(schemaNameAttr).(string))
+}
+
+// getNames returns database and schemaension name. If we are importing this resource, they will be parsed
+// from the resource ID (it will return an error if parsing failed) otherwise they will be simply
+// get from the state.
+func getSchemaNames(d *schema.ResourceData) (string, string, error) {
+	var database, schemaName string
+
+	database = d.Get(schemaDatabaseAttr).(string)
+	schemaName = d.Get(schemaNameAttr).(string)
+
+	// When importing, we have to parse the ID to find schemaension and database names.
+	if schemaName == "" {
+		parsed := strings.Split(d.Id(), "-")
+		if len(parsed) != 2 {
+			return "", "", fmt.Errorf("schema ID %s has not the expected format 'database-schema': %v", d.Id(), parsed)
+		}
+		database = parsed[0]
+		schemaName = parsed[1]
+	}
+	return database, schemaName, nil
 }

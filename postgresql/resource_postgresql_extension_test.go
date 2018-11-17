@@ -9,16 +9,37 @@ import (
 	"github.com/hashicorp/terraform/terraform"
 )
 
+const (
+	testExtName = "pg_trgm"
+)
+
 func TestAccPostgresqlExtension_Basic(t *testing.T) {
+	skipIfNotAcc(t)
+	// We want to test only the extension part in the terraform config
+	// so it's better to manually create the database
+	// (e.g.: it allows us to really test the destroy of an extension without
+	//  the whole db being dropped by Terraform)
+	dbSuffix, teardown := setupTestDatabase(t, true, false, false)
+	defer teardown()
+
+	dbName, _ := getTestDBNames(dbSuffix)
+
+	var testConfig = fmt.Sprintf(`
+resource "postgresql_extension" "myextension" {
+  name     = "%s"
+  database = "%s"
+}
+	`, testExtName, dbName)
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckPostgresqlExtensionDestroy,
+		CheckDestroy: testAccCheckPostgresqlExtensionDestroy(t, dbName, testExtName),
 		Steps: []resource.TestStep{
 			{
-				Config: testAccPostgresqlExtensionConfig,
+				Config: testConfig,
 				Check: resource.ComposeTestCheckFunc(
-					testAccCheckPostgresqlExtensionExists("postgresql_extension.myextension"),
+					testAccCheckPostgresqlExtensionExists(t, dbName, testExtName),
 					resource.TestCheckResourceAttr(
 						"postgresql_extension.myextension", "name", "pg_trgm"),
 					resource.TestCheckResourceAttr(
@@ -34,64 +55,49 @@ func TestAccPostgresqlExtension_Basic(t *testing.T) {
 	})
 }
 
-func testAccCheckPostgresqlExtensionDestroy(s *terraform.State) error {
-	client := testAccProvider.Meta().(*Client)
-
-	for _, rs := range s.RootModule().Resources {
-		if rs.Type != "postgresql_extension" {
-			continue
-		}
-
-		exists, err := checkExtensionExists(client, rs.Primary.ID)
-
-		if err != nil {
-			return fmt.Errorf("Error checking extension %s", err)
-		}
-
-		if exists {
-			return fmt.Errorf("Extension still exists after destroy")
-		}
-	}
-
-	return nil
-}
-
-func testAccCheckPostgresqlExtensionExists(n string) resource.TestCheckFunc {
-	return func(s *terraform.State) error {
-		rs, ok := s.RootModule().Resources[n]
-		if !ok {
-			return fmt.Errorf("Resource not found: %s", n)
-		}
-
-		if rs.Primary.ID == "" {
-			return fmt.Errorf("No ID is set")
-		}
-
-		client := testAccProvider.Meta().(*Client)
-		exists, err := checkExtensionExists(client, rs.Primary.ID)
-
-		if err != nil {
-			return fmt.Errorf("Error checking extension %s", err)
-		}
-
-		if !exists {
-			return fmt.Errorf("Extension not found")
-		}
-
-		return nil
-	}
-}
-
 func TestAccPostgresqlExtension_SchemaRename(t *testing.T) {
+	skipIfNotAcc(t)
+
+	dbSuffix, teardown := setupTestDatabase(t, true, false, false)
+	defer teardown()
+
+	dbName, _ := getTestDBNames(dbSuffix)
+
+	var testConfig = fmt.Sprintf(`
+resource "postgresql_schema" "ext1foo" {
+  name = "foo"
+  database = "%s"
+}
+
+resource "postgresql_extension" "ext1trgm" {
+  name = "%s"
+  database = "%s"
+  schema = "${postgresql_schema.ext1foo.name}"
+}
+`, dbName, testExtName, dbName)
+
+	var testConfigUpdate = fmt.Sprintf(`
+resource "postgresql_schema" "ext1foo" {
+  name = "bar"
+  database = "%s"
+}
+
+resource "postgresql_extension" "ext1trgm" {
+  name = "%s"
+  database = "%s"
+  schema = "${postgresql_schema.ext1foo.name}"
+}
+`, dbName, testExtName, dbName)
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckPostgresqlExtensionDestroy,
+		CheckDestroy: testAccCheckPostgresqlExtensionDestroy(t, dbName, testExtName),
 		Steps: []resource.TestStep{
 			{
-				Config: testAccPostgresqlExtensionSchemaChange1,
+				Config: testConfig,
 				Check: resource.ComposeTestCheckFunc(
-					testAccCheckPostgresqlExtensionExists("postgresql_extension.ext1trgm"),
+					testAccCheckPostgresqlExtensionExists(t, dbName, testExtName),
 					resource.TestCheckResourceAttr(
 						"postgresql_schema.ext1foo", "name", "foo"),
 					resource.TestCheckResourceAttr(
@@ -103,9 +109,8 @@ func TestAccPostgresqlExtension_SchemaRename(t *testing.T) {
 				),
 			},
 			{
-				Config: testAccPostgresqlExtensionSchemaChange2,
+				Config: testConfigUpdate,
 				Check: resource.ComposeTestCheckFunc(
-					testAccCheckPostgresqlExtensionExists("postgresql_extension.ext1trgm"),
 					resource.TestCheckResourceAttr(
 						"postgresql_schema.ext1foo", "name", "bar"),
 					resource.TestCheckResourceAttr(
@@ -118,9 +123,47 @@ func TestAccPostgresqlExtension_SchemaRename(t *testing.T) {
 	})
 }
 
-func checkExtensionExists(client *Client, extensionName string) (bool, error) {
+func testAccCheckPostgresqlExtensionDestroy(t *testing.T, dbName, extName string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		exists, err := checkExtensionExists(t, dbName, extName)
+		if err != nil {
+			return err
+		}
+
+		if exists {
+			return fmt.Errorf("Extension is not destroyed")
+		}
+
+		return nil
+	}
+}
+
+func testAccCheckPostgresqlExtensionExists(t *testing.T, dbName, extName string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		exists, err := checkExtensionExists(t, dbName, extName)
+		if err != nil {
+			return err
+		}
+
+		if !exists {
+			return fmt.Errorf("Extension not found")
+		}
+
+		return nil
+	}
+}
+
+func checkExtensionExists(t *testing.T, dbName, extName string) (bool, error) {
+	config := getTestConfig(t)
+
+	db, err := sql.Open("postgres", config.connStr(dbName))
+	if err != nil {
+		t.Fatalf("could not open connection pool for db %s: %v", dbName, err)
+	}
+	defer db.Close()
+
 	var _rez bool
-	err := client.DB().QueryRow("SELECT TRUE from pg_catalog.pg_extension d WHERE extname=$1", extensionName).Scan(&_rez)
+	err = db.QueryRow("SELECT TRUE from pg_catalog.pg_extension d WHERE extname=$1", extName).Scan(&_rez)
 	switch {
 	case err == sql.ErrNoRows:
 		return false, nil
@@ -130,31 +173,3 @@ func checkExtensionExists(client *Client, extensionName string) (bool, error) {
 
 	return true, nil
 }
-
-var testAccPostgresqlExtensionConfig = `
-resource "postgresql_extension" "myextension" {
-  name = "pg_trgm"
-}
-`
-
-var testAccPostgresqlExtensionSchemaChange1 = `
-resource "postgresql_schema" "ext1foo" {
-  name = "foo"
-}
-
-resource "postgresql_extension" "ext1trgm" {
-  name = "pg_trgm"
-  schema = "${postgresql_schema.ext1foo.name}"
-}
-`
-
-var testAccPostgresqlExtensionSchemaChange2 = `
-resource "postgresql_schema" "ext1foo" {
-  name = "bar"
-}
-
-resource "postgresql_extension" "ext1trgm" {
-  name = "pg_trgm"
-  schema = "${postgresql_schema.ext1foo.name}"
-}
-`

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/errwrap"
+	"github.com/hashicorp/terraform/helper/resource"
 )
 
 const (
@@ -39,6 +40,14 @@ func getTestConfig(t *testing.T) Config {
 		Username: getEnv("PGUSER", ""),
 		Password: getEnv("PGPASSWORD", ""),
 		SSLMode:  getEnv("PGSSLMODE", ""),
+	}
+}
+
+func skipIfNotAcc(t *testing.T) {
+	if os.Getenv(resource.TestEnvVar) == "" {
+		t.Skip(fmt.Sprintf(
+			"Acceptance tests skipped unless env '%s' set",
+			resource.TestEnvVar))
 	}
 }
 
