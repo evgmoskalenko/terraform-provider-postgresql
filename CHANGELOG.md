@@ -4,6 +4,7 @@ BUG FIXES:
 
 * Parse Azure PostgreSQL version
   ([#40](https://github.com/terraform-providers/terraform-provider-postgresql/pull/40))
+* `create_database` is now being applied correctly on role creation
 
 ## 0.1.2 (July 06, 2018)
 
