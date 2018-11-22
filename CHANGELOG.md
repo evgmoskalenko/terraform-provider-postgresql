@@ -8,6 +8,7 @@ BUG FIXES:
 FEATURES:
 
 * New resource: postgresql_grant. This resource allows to grant privileges on all existing tables or sequences for a specified role in a specified schema.
+* New resource: postgresql_default_privileges. This resource allow to manage default privileges for tables or sequences for a specified role in a specified schema.
 
 ## 0.1.2 (July 06, 2018)
 
