@@ -1,4 +1,8 @@
 ## 0.1.4 (Unreleased)
+FEATURES:
+
+* `postgresql_role`: Add `roles` attribute.
+
 BUG FIXES:
 
 * `create_database` is now being applied correctly on role creation

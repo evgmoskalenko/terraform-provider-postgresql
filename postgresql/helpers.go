@@ -3,6 +3,9 @@ package postgresql
 import (
 	"fmt"
 	"strings"
+
+	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/lib/pq"
 )
 
 // pqQuoteLiteral returns a string literal safe for inclusion in a PostgreSQL
@@ -21,4 +24,12 @@ func validateConnLimit(v interface{}, key string) (warnings []string, errors []e
 		errors = append(errors, fmt.Errorf("%s can not be less than -1", key))
 	}
 	return
+}
+
+func pgArrayToSet(arr pq.ByteaArray) *schema.Set {
+	s := make([]interface{}, len(arr))
+	for i, v := range arr {
+		s[i] = string(v)
+	}
+	return schema.NewSet(schema.HashString, s)
 }
