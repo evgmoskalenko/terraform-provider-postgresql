@@ -11,15 +11,24 @@ import (
 )
 
 func TestAccPostgresqlSchema_Basic(t *testing.T) {
+	skipIfNotAcc(t)
+
+	dbSuffix, teardown := setupTestDatabase(t, true, false, false)
+	defer teardown()
+
+	dbName, _ := getTestDBNames(dbSuffix)
+
+	var testConfig = fmt.Sprintf(testSchemaConfigBasic, dbName, dbName, dbName)
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckPostgresqlSchemaDestroy,
+		CheckDestroy: testAccCheckPostgresqlSchemasDestroy(t, dbName, []string{"foo", "bar", "baz"}),
 		Steps: []resource.TestStep{
 			{
-				Config: testAccPostgresqlSchemaConfig,
+				Config: testConfig,
 				Check: resource.ComposeTestCheckFunc(
-					testAccCheckPostgresqlSchemaExists("postgresql_schema.test1", "foo"),
+					testAccCheckPostgresqlSchemasExist(t, dbName, []string{"foo", "bar", "baz"}),
 					resource.TestCheckResourceAttr("postgresql_role.role_all_without_grant", "name", "role_all_without_grant"),
 					resource.TestCheckResourceAttr("postgresql_role.role_all_without_grant", "login", "true"),
 
@@ -54,15 +63,25 @@ func TestAccPostgresqlSchema_Basic(t *testing.T) {
 }
 
 func TestAccPostgresqlSchema_AddPolicy(t *testing.T) {
+	skipIfNotAcc(t)
+
+	dbSuffix, teardown := setupTestDatabase(t, true, false, false)
+	defer teardown()
+
+	dbName, _ := getTestDBNames(dbSuffix)
+
+	testConfig := fmt.Sprintf(testSchemaConfigAddPolicy, dbName)
+	testConfigUpdate := fmt.Sprintf(testSchemaConfigAddPolicyUpdate, dbName)
+
 	resource.Test(t, resource.TestCase{
 		PreCheck:     func() { testAccPreCheck(t) },
 		Providers:    testAccProviders,
-		CheckDestroy: testAccCheckPostgresqlSchemaDestroy,
+		CheckDestroy: testAccCheckPostgresqlSchemasDestroy(t, dbName, []string{"test4"}),
 		Steps: []resource.TestStep{
 			{
-				Config: testAccPostgresqlSchemaGrant1,
+				Config: testConfig,
 				Check: resource.ComposeTestCheckFunc(
-					testAccCheckPostgresqlSchemaExists("postgresql_schema.test4", "test4"),
+					testAccCheckPostgresqlSchemasExist(t, dbName, []string{"test4"}),
 
 					resource.TestCheckResourceAttr("postgresql_role.all_without_grant_stay", "name", "all_without_grant_stay"),
 					resource.TestCheckResourceAttr("postgresql_role.all_without_grant_drop", "name", "all_without_grant_drop"),
@@ -113,9 +132,9 @@ func TestAccPostgresqlSchema_AddPolicy(t *testing.T) {
 				),
 			},
 			{
-				Config: testAccPostgresqlSchemaGrant2,
+				Config: testConfigUpdate,
 				Check: resource.ComposeTestCheckFunc(
-					testAccCheckPostgresqlSchemaExists("postgresql_schema.test4", "test4"),
+					testAccCheckPostgresqlSchemasExist(t, dbName, []string{"test4"}),
 					resource.TestCheckResourceAttr("postgresql_role.all_without_grant_stay", "name", "all_without_grant_stay"),
 					resource.TestCheckResourceAttr("postgresql_role.all_without_grant_drop", "name", "all_without_grant_drop"),
 					resource.TestCheckResourceAttr("postgresql_role.policy_compose", "name", "policy_compose"),
@@ -162,61 +181,49 @@ func TestAccPostgresqlSchema_AddPolicy(t *testing.T) {
 	})
 }
 
-func testAccCheckPostgresqlSchemaDestroy(s *terraform.State) error {
-	client := testAccProvider.Meta().(*Client)
-
-	for _, rs := range s.RootModule().Resources {
-		if rs.Type != "postgresql_schema" {
-			continue
-		}
-
-		exists, err := checkSchemaExists(client, rs.Primary.ID)
-		if err != nil {
-			return fmt.Errorf("Error checking schema %s", err)
-		}
-
-		if exists {
-			return fmt.Errorf("Schema still exists after destroy")
-		}
-	}
-
-	return nil
-}
-
-func testAccCheckPostgresqlSchemaExists(n string, schemaName string) resource.TestCheckFunc {
+func testAccCheckPostgresqlSchemasDestroy(t *testing.T, dbName string, schemas []string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
-		rs, ok := s.RootModule().Resources[n]
-		if !ok {
-			return fmt.Errorf("Resource not found: %s", n)
+		for _, schemaName := range schemas {
+			exists, err := checkSchemaExists(t, dbName, schemaName)
+			if err != nil {
+				return fmt.Errorf("Error checking schema %s", err)
+			}
+
+			if exists {
+				return fmt.Errorf("Schema still exists after destroy")
+			}
 		}
-
-		if rs.Primary.ID == "" {
-			return fmt.Errorf("No ID is set")
-		}
-
-		actualSchemaName := rs.Primary.Attributes["name"]
-		if actualSchemaName != schemaName {
-			return fmt.Errorf("Wrong value for schema name expected %s got %s", schemaName, actualSchemaName)
-		}
-
-		client := testAccProvider.Meta().(*Client)
-		exists, err := checkSchemaExists(client, rs.Primary.ID)
-
-		if err != nil {
-			return fmt.Errorf("Error checking schema %s", err)
-		}
-
-		if !exists {
-			return fmt.Errorf("Schema not found")
-		}
-
 		return nil
 	}
 }
 
-func checkSchemaExists(client *Client, schemaName string) (bool, error) {
+func testAccCheckPostgresqlSchemasExist(t *testing.T, dbName string, schemas []string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		for _, schemaName := range schemas {
+			exists, err := checkSchemaExists(t, dbName, schemaName)
+			if err != nil {
+				return fmt.Errorf("Error checking schema %s", err)
+			}
+
+			if !exists {
+				return fmt.Errorf("Schema not found")
+			}
+		}
+		return nil
+	}
+}
+
+func checkSchemaExists(t *testing.T, dbName string, schemaName string) (bool, error) {
+	config := getTestConfig(t)
+
+	db, err := sql.Open("postgres", config.connStr(dbName))
+	if err != nil {
+		t.Fatalf("could not open connection pool for db %s: %v", dbName, err)
+	}
+	defer db.Close()
+
 	var _rez string
-	if err := client.DB().QueryRow("SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname=$1", schemaName).Scan(&_rez); err != nil {
+	if err := db.QueryRow("SELECT nspname FROM pg_catalog.pg_namespace WHERE nspname=$1", schemaName).Scan(&_rez); err != nil {
 		switch {
 		case err == sql.ErrNoRows:
 			return false, nil
@@ -226,10 +233,9 @@ func checkSchemaExists(client *Client, schemaName string) (bool, error) {
 	}
 
 	return true, nil
-
 }
 
-const testAccPostgresqlSchemaConfig = `
+var testSchemaConfigBasic = `
 resource "postgresql_role" "role_all_without_grant" {
   name = "role_all_without_grant"
   login = true
@@ -241,10 +247,12 @@ resource "postgresql_role" "role_all_with_grant" {
 
 resource "postgresql_schema" "test1" {
   name = "foo"
+  database = "%s"
 }
 
 resource "postgresql_schema" "test2" {
   name = "bar"
+  database = "%s"
   owner = "${postgresql_role.role_all_without_grant.name}"
   if_not_exists = false
 
@@ -257,6 +265,7 @@ resource "postgresql_schema" "test2" {
 
 resource "postgresql_schema" "test3" {
   name = "baz"
+  database = "%s"
   owner = "${postgresql_role.role_all_without_grant.name}"
   if_not_exists = true
 
@@ -271,10 +280,9 @@ resource "postgresql_schema" "test3" {
     usage = true
     role = "${postgresql_role.role_all_without_grant.name}"
   }
-}
-`
+}`
 
-const testAccPostgresqlSchemaGrant1 = `
+var testSchemaConfigAddPolicy = `
 resource "postgresql_role" "all_without_grant_stay" {
   name = "all_without_grant_stay"
 }
@@ -301,6 +309,7 @@ resource "postgresql_role" "all_with_grantdrop" {
 
 resource "postgresql_schema" "test4" {
   name = "test4"
+  database = "%s"
   owner = "${postgresql_role.all_without_grant_stay.name}"
 
   policy {
@@ -347,7 +356,7 @@ resource "postgresql_schema" "test4" {
 }
 `
 
-const testAccPostgresqlSchemaGrant2 = `
+var testSchemaConfigAddPolicyUpdate = `
 resource "postgresql_role" "all_without_grant_stay" {
   name = "all_without_grant_stay"
 }
@@ -374,7 +383,8 @@ resource "postgresql_role" "policy_new" {
 
 resource "postgresql_schema" "test4" {
   name = "test4"
-  owner = "${postgresql_role.all_without_grant_stay.name}"
+  database = "%s"
+  owner    = "${postgresql_role.all_without_grant_stay.name}"
 
   policy {
     create = true
