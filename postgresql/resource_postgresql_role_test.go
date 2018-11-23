@@ -41,6 +41,8 @@ func TestAccPostgresqlRole_Basic(t *testing.T) {
 					resource.TestCheckResourceAttr("postgresql_role.role_with_defaults", "skip_reassign_owned", "false"),
 					resource.TestCheckResourceAttr("postgresql_role.role_with_create_database", "name", "role_with_create_database"),
 					resource.TestCheckResourceAttr("postgresql_role.role_with_create_database", "create_database", "true"),
+					resource.TestCheckResourceAttr("postgresql_role.role_with_superuser", "name", "role_with_superuser"),
+					resource.TestCheckResourceAttr("postgresql_role.role_with_superuser", "superuser", "true"),
 					resource.TestCheckResourceAttr("postgresql_role.role_with_defaults", "roles.#", "0"),
 
 					testAccCheckPostgresqlRoleExists("tf_tests_sub_role", []string{"tf_tests_myrole2", "tf_tests_role_simple"}),
@@ -232,17 +234,24 @@ resource "postgresql_role" "role_with_defaults" {
   valid_until = "infinity"
 }
 
+resource "postgresql_role" "role_with_superuser" {
+  name = "role_with_superuser"
+  superuser = true
+  login = true
+  password = "mypass"
+}
+
+resource "postgresql_role" "role_with_create_database" {
+  name = "role_with_create_database"
+  create_database = true
+}
+
 resource "postgresql_role" "sub_role" {
 	name = "tf_tests_sub_role"
 	roles = [
 		"${postgresql_role.myrole2.id}",
 		"${postgresql_role.role_simple.id}",
 	]
-}
-
-resource "postgresql_role" "role_with_create_database" {
-  name = "role_with_create_database"
-  create_database = true
 }
 `
 
