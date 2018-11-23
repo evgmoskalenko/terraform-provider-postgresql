@@ -103,6 +103,12 @@ func resourcePostgreSQLExtensionExists(d *schema.ResourceData, meta interface{})
 		return false, err
 	}
 
+	// Check the database exists
+	exists, err := dbExists(c.DB(), database)
+	if err != nil || !exists {
+		return false, err
+	}
+
 	db, err := getDBConnection(c, database)
 	if err != nil {
 		return false, err
