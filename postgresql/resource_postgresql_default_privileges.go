@@ -68,8 +68,11 @@ func resourcePostgreSQLDefaultPrivileges() *schema.Resource {
 }
 
 func resourcePostgreSQLDefaultPrivilegesRead(d *schema.ResourceData, meta interface{}) error {
-
 	client := meta.(*Client)
+
+	client.catalogLock.RLock()
+	defer client.catalogLock.RUnlock()
+
 	exists, err := checkRoleDBSchemaExists(client, d)
 	if err != nil {
 		return err
@@ -93,8 +96,12 @@ func resourcePostgreSQLDefaultPrivilegesCreate(d *schema.ResourceData, meta inte
 		return err
 	}
 
-	client := meta.(*Client)
 	database := d.Get("database").(string)
+
+	client := meta.(*Client)
+
+	client.catalogLock.Lock()
+	defer client.catalogLock.Unlock()
 
 	txn, err := startTransaction(client, database)
 	if err != nil {
@@ -128,7 +135,12 @@ func resourcePostgreSQLDefaultPrivilegesCreate(d *schema.ResourceData, meta inte
 }
 
 func resourcePostgreSQLDefaultPrivilegesDelete(d *schema.ResourceData, meta interface{}) error {
-	txn, err := startTransaction(meta.(*Client), d.Get("database").(string))
+	client := meta.(*Client)
+
+	client.catalogLock.Lock()
+	defer client.catalogLock.Unlock()
+
+	txn, err := startTransaction(client, d.Get("database").(string))
 	if err != nil {
 		return err
 	}

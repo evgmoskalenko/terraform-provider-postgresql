@@ -69,6 +69,10 @@ func resourcePostgreSQLGrant() *schema.Resource {
 
 func resourcePostgreSQLGrantRead(d *schema.ResourceData, meta interface{}) error {
 	client := meta.(*Client)
+
+	client.catalogLock.RLock()
+	defer client.catalogLock.RUnlock()
+
 	exists, err := checkRoleDBSchemaExists(client, d)
 	if err != nil {
 		return err
@@ -93,8 +97,12 @@ func resourcePostgreSQLGrantCreate(d *schema.ResourceData, meta interface{}) err
 		return err
 	}
 
-	client := meta.(*Client)
 	database := d.Get("database").(string)
+
+	client := meta.(*Client)
+
+	client.catalogLock.Lock()
+	defer client.catalogLock.Unlock()
 
 	txn, err := startTransaction(client, database)
 	if err != nil {
@@ -129,7 +137,12 @@ func resourcePostgreSQLGrantCreate(d *schema.ResourceData, meta interface{}) err
 }
 
 func resourcePostgreSQLGrantDelete(d *schema.ResourceData, meta interface{}) error {
-	txn, err := startTransaction(meta.(*Client), d.Get("database").(string))
+	client := meta.(*Client)
+
+	client.catalogLock.Lock()
+	defer client.catalogLock.Unlock()
+
+	txn, err := startTransaction(client, d.Get("database").(string))
 	if err != nil {
 		return err
 	}
