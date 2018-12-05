@@ -367,13 +367,11 @@ func resourcePostgreSQLRoleReadImpl(c *Client, d *schema.ResourceData) error {
 		`COALESCE(rolvaliduntil::TEXT, 'infinity')`,
 	}
 
-	roleSQL := fmt.Sprintf(`SELECT %s, array_remove(array_agg(roles.role_name::text), NULL)
-		FROM pg_catalog.pg_roles LEFT JOIN information_schema.applicable_roles roles ON rolname = roles.grantee
-		WHERE rolname=$1
-		GROUP BY %s`,
+	roleSQL := fmt.Sprintf(`SELECT %s, ARRAY(
+			SELECT pg_get_userbyid(roleid) FROM pg_catalog.pg_auth_members members WHERE member = pg_roles.oid
+		)
+		FROM pg_catalog.pg_roles WHERE rolname=$1`,
 		// select columns
-		strings.Join(columns, ", "),
-		// group by columns
 		strings.Join(columns, ", "),
 	)
 	err := c.DB().QueryRow(roleSQL, roleID).Scan(
@@ -744,7 +742,11 @@ func setRoleValidUntil(txn *sql.Tx, d *schema.ResourceData) error {
 func revokeRoles(txn *sql.Tx, d *schema.ResourceData) error {
 	role := d.Get(roleNameAttr).(string)
 
-	query := "SELECT role_name FROM information_schema.applicable_roles WHERE grantee = $1"
+	query := `SELECT pg_get_userbyid(roleid)
+		FROM pg_catalog.pg_auth_members members
+		JOIN pg_catalog.pg_roles ON members.member = pg_roles.oid
+		WHERE rolname = $1`
+
 	rows, err := txn.Query(query, role)
 	if err != nil {
 		return errwrap.Wrapf(fmt.Sprintf("could not get roles list for role %s: {{err}}", role), err)
